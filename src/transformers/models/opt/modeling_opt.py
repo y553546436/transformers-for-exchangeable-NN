@@ -366,7 +366,6 @@ OPT_ATTENTION_CLASSES = {
     "sdpa": OPTSdpaAttention,
 }
 
-
 class OPTDecoderLayer(nn.Module):
     def __init__(self, config: OPTConfig, layer_idx: Optional[int] = None):
         super().__init__()
@@ -384,6 +383,12 @@ class OPTDecoderLayer(nn.Module):
         self.fc1 = nn.Linear(self.embed_dim, config.ffn_dim, bias=config.enable_bias)
         self.fc2 = nn.Linear(config.ffn_dim, self.embed_dim, bias=config.enable_bias)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim, elementwise_affine=config.layer_norm_elementwise_affine)
+
+    def my_eval(self, mylinear_class, confidence):
+        self.fc1 = mylinear_class(self.fc1, confidence)
+
+    def gather_flops(self):
+        return self.fc1.gather_flops()
 
     def forward(
         self,
@@ -1080,6 +1085,23 @@ class OPTForCausalLM(OPTPreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model.decoder
+    
+    def get_num_dynamic_prune_layers(self):
+        return len(self.model.decoder.layers)
+    
+    def my_eval(self, mylinear_class, confidences):
+        from copy import deepcopy
+        confidences = deepcopy(confidences)
+        if not hasattr(confidences, '__next__'):
+            confidences = iter(confidences)
+        for layer in self.model.decoder.layers:
+            layer.my_eval(mylinear_class, next(confidences))
+    
+    def gather_flops(self):
+        flops = 0
+        for layer in self.model.decoder.layers:
+            flops += layer.gather_flops()
+        return flops
 
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
