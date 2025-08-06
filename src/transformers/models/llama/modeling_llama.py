@@ -170,6 +170,12 @@ class LlamaMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias)
         self.act_fn = ACT2FN[config.hidden_act]
 
+    def my_eval(self, mylinear_class, confidence):
+        self.gate_proj = mylinear_class(self.gate_proj, confidence)
+    
+    def gather_flops(self):
+        return self.gate_proj.gather_flops()
+
     def forward(self, x):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
@@ -300,6 +306,12 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def my_eval(self, mylinear_class, confidence):
+        self.mlp.my_eval(mylinear_class, confidence)
+
+    def gather_flops(self):
+        return self.mlp.gather_flops()
 
     def forward(
         self,
@@ -750,6 +762,23 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
+    
+    def get_num_dynamic_prune_layers(self):
+        return len(self.model.layers)
+    
+    def my_eval(self, mylinear_class, confidences):
+        from copy import deepcopy
+        confidences = deepcopy(confidences)
+        if not hasattr(confidences, '__next__'):
+            confidences = iter(confidences)
+        for layer in self.model.layers[: self.config.num_hidden_layers]:
+            layer.my_eval(mylinear_class, next(confidences))
+    
+    def gather_flops(self):
+        flops = 0
+        for layer in self.model.layers[: self.config.num_hidden_layers]:
+            flops += layer.gather_flops()
+        return flops
 
     @can_return_tuple
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
